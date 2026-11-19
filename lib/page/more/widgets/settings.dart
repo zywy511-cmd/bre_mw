@@ -5,7 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:zephyr/config/router/router.gr.dart';
 import 'package:zephyr/i18n/strings.g.dart';
 import 'package:zephyr/page/comic_follow/cubit/comic_follow_cubit.dart';
-import 'package:zephyr/page/more/widgets/copy4000_account_tile.dart';
+import 'package:zephyr/page/more/widgets/manwaba_account_tile.dart';
 
 class SettingsWidget extends StatelessWidget {
   const SettingsWidget({super.key});
@@ -15,7 +15,22 @@ class SettingsWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Copy4000AccountTile(),
+        const ManwabaAccountTile(),
+        _buildSectionTitle(context, '漫屋吧账号', Icons.person_outline),
+        ListTile(
+          leading: const Icon(Icons.login_outlined),
+          title: const Text('账号登录'),
+          subtitle: const Text('登录已有的漫屋吧账号'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => openManwabaAuth(context, mode: kManwabaAuthModeLogin),
+        ),
+        ListTile(
+          leading: const Icon(Icons.person_add_alt_1_outlined),
+          title: const Text('切换注册'),
+          subtitle: const Text('打开注册表单，注册成功后自动登录'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => openManwabaAuth(context, mode: kManwabaAuthModeRegister),
+        ),
         _buildSectionTitle(context, t.more.common, Icons.widgets_outlined),
         ListTile(
           leading: const Icon(Icons.download_outlined),
