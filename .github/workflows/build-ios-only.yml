@@ -77,6 +77,12 @@ jobs:
             rust
 
       - name: 编译 iOS (无签)
+        env:
+          # 无 Development Team 的 runner 上强制免签：Flutter 会把这两个配置透传给 xcodebuild
+          FLUTTER_XCODE_CODE_SIGNING_ALLOWED: NO
+          FLUTTER_XCODE_CODE_SIGNING_REQUIRED: NO
+          FLUTTER_XCODE_CODE_SIGN_STYLE: Manual
+          FLUTTER_XCODE_DEVELOPMENT_TEAM: ""
         run: |
           export PATH="$CARGO_HOME/bin:$PATH"
           export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -91,9 +97,15 @@ jobs:
           fvm flutter precache --ios
           fvm flutter pub get
           # 动态修改 pbxcproj，关闭整个项目的强签名要求：
-          sed -i '' 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' 's/CODE_SIGNING_ALLOWED = YES;/CODE_SIGNING_ALLOWED = NO;/g' ios/Runner.xcodeproj/project.pbxproj
-          fvm flutter build ios --release --no-codesign --split-debug-info=build/symbols
+          PBX=ios/Runner.xcodeproj/project.pbxproj
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' "$PBX"
+          sed -i '' 's/CODE_SIGNING_ALLOWED = YES;/CODE_SIGNING_ALLOWED = NO;/g' "$PBX"
+          # 关掉自动签名：pbxproj 里是 CODE_SIGN_STYLE = Automatic，没有 Development Team 时
+          # xcodebuild 会直接报 "requires a development team / provisioning profile"，
+          # 改成 Manual 并去掉 ProvisioningStyle，配合上面的 CODE_SIGNING_ALLOWED=NO 出免签包。
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBX"
+          sed -i '' '/ProvisioningStyle = Automatic;/d' "$PBX"
+          fvm flutter build ios --release --no-codesign --split-debug-info=build/symbols --verbose
 
       - name: 封装 IPA
         run: |
