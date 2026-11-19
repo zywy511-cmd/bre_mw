@@ -82,6 +82,8 @@ Future<void> _removeLegacyBuiltinPlugin() async {
         isEnabled: false,
         isDeleted: true,
         deletedAt: now,
+        lastLoadSuccess: false,
+        lastLoadError: null,
         sortOrder: existing.sortOrder,
         debug: existing.debug,
         debugUrl: existing.debugUrl,
