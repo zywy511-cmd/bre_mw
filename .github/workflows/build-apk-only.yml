@@ -1,0 +1,182 @@
+name: Build APK Only
+
+# 只构建 Android APK，不触发 iOS / Windows / macOS / Linux。
+# 仅手动触发；签名用仓库 secret 里的新 keystore。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apk-only
+  cancel-in-progress: false
+
+env:
+  BREEZE_PLUGIN_GITHUB_TOKEN: ${{ secrets.BREEZE_PLUGIN_GITHUB_TOKEN != '' && secrets.BREEZE_PLUGIN_GITHUB_TOKEN || github.token }}
+
+jobs:
+  build-android:
+    # 签名文件由仓库 secret 里的新 keystore 现场写入，不依赖 git-crypt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # - name: 克隆 rquickjs_playground
+      #   run: git clone https://github.com/deretame/rquickjs_playground.git
+
+      - name: 释放空间 (free-disk-space)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: false
+          large-packages: false
+          docker-images: true
+          preinstalled-runtimes: true
+          swap-storage: false
+
+      - name: 重建 Android SDK 目录
+        run: |
+          sudo mkdir -p /usr/local/lib/android/sdk
+          sudo chown -R $USER:$USER /usr/local/lib/android
+
+      - name: 安装编译依赖 (LLVM/Clang)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-dev libclang-dev clang
+      - name: 写入发布签名（新 keystore，仓库 secret 提供）
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "缺少 ANDROID_KEYSTORE_BASE64，无法签名"; exit 1
+          fi
+          # 仓库里这两份是 git-crypt 加密文件，没有 key 解不开，直接换成明文新签名
+          rm -f android/key.properties android/Breeze-key.keystore
+          mkdir -p android/app
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.keystore\n' \
+            "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_PASSWORD" "$ANDROID_KEY_ALIAS" > android/key.properties
+          ls -l android/app/release.keystore android/key.properties
+
+      - name: 设置 Java 21 & SDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "gradle"
+
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v4
+
+      # compileSdk 37（androidx.core 1.19 起的 AAR metadata 要求）对应的平台与
+      # build-tools 显式预装，避免 Gradle 构建时再临时下载
+      - name: 安装 Android SDK Platform 37
+        run: yes | sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: 设置 Dart SDK
+        uses: dart-lang/setup-dart@v1
+
+      - name: 设置 Flutter (FVM)
+        run: |
+          dart pub global activate fvm
+          echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          fvm install && fvm use --force
+          echo "$GITHUB_WORKSPACE/.fvm/flutter_sdk/bin" >> $GITHUB_PATH
+
+      - name: 安装 Rust (Android 目标)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust
+
+      - name: 读取 NDK 版本配置
+        id: ndk-config
+        run: |
+          NDK_VER=$(grep "ndkVersion" android/app/build.gradle.kts | awk -F'"' '{print $2}')
+          echo "ndk_version=$NDK_VER" >> $GITHUB_OUTPUT
+
+      - name: 缓存 Android NDK
+        uses: actions/cache@v5
+        with:
+          path: /usr/local/lib/android/sdk/ndk/${{ steps.ndk-config.outputs.ndk_version }}
+          key: ${{ runner.os }}-android-ndk-${{ steps.ndk-config.outputs.ndk_version }}
+
+      - name: 安装 Android NDK
+        run: yes | sdkmanager "ndk;${{ steps.ndk-config.outputs.ndk_version }}"
+
+      - name: 安装 Android CMake
+        run: yes | sdkmanager "cmake;3.22.1"
+
+      - name: 设置 NDK 环境变量
+        run: |
+          NDK_VER=${{ steps.ndk-config.outputs.ndk_version }}
+          ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}
+          NDK_PATH="$ANDROID_HOME/ndk/$NDK_VER"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+          echo "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: 接受 Android Licenses
+        run: yes | fvm flutter doctor --android-licenses || true
+
+      - name: 拉取 Flutter 依赖
+        run: fvm flutter pub get
+
+      - name: 缓存 Android waifu2x CLI 依赖
+        uses: actions/cache@v5
+        with:
+          path: third_party/android_ncnn_deps
+          key: ${{ runner.os }}-android-waifu2x-deps-${{ hashFiles('script/android/prepare_android_waifu2x_deps.py', 'script/android/build_ncnn_static_android.py', 'script/android/build_waifu2x_cli_android.py', 'android/app/src/main/cpp/waifu2x_cli/CMakeLists.txt') }}
+
+      - name: 缓存 ncnn 源码
+        uses: actions/cache@v5
+        with:
+          path: third_party/ncnn-src
+          key: ${{ runner.os }}-android-ncnn-src-${{ hashFiles('script/android/build_ncnn_static_android.py') }}
+
+      - name: 缓存 RealSR-NCNN-Android 源码
+        uses: actions/cache@v5
+        with:
+          path: third_party/RealSR-NCNN-Android
+          key: ${{ runner.os }}-android-realsr-src-${{ hashFiles('script/android/build_waifu2x_cli_android.py') }}
+
+      - name: 准备 Android waifu2x CLI 依赖
+        run: |
+          python3 script/android/prepare_android_waifu2x_deps.py
+
+      - name: 编译 Android 静态 ncnn
+        run: |
+          python3 script/android/build_ncnn_static_android.py
+
+      - name: 编译 Android waifu2x CLI
+        run: |
+          python3 script/android/build_waifu2x_cli_android.py
+
+      - name: 运行 Android 构建脚本
+        run: |
+          fvm dart ./script/build/build_apk.dart
+
+      - name: 上传 Android 产物
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-apks
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/apk/skia/*.apk
+
+  # ══════════════════════════════════════════
+  # 2. Linux 构建
+  # ══════════════════════════════════════════
